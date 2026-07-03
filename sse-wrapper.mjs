@@ -30,15 +30,20 @@ const SERVERS = {
 function resolveServer(key) {
   const server = SERVERS[key];
   if (!server) return null;
-  const pkgDir = `/app/node_modules/${server.name}`;
-  const binPath = `${pkgDir}/dist/index.js`;
-  if (existsSync(binPath)) return binPath;
-  // Try package.json bin
-  try {
-    const pkg = JSON.parse(require('fs').readFileSync(`${pkgDir}/package.json`, 'utf8'));
-    const bin = typeof pkg.bin === 'string' ? pkg.bin : Object.values(pkg.bin || {})[0];
-    if (bin) return `${pkgDir}/${bin}`;
-  } catch {}
+  // Try Docker path first, then local
+  const paths = [
+    `/app/node_modules/${server.name}/dist/bundle.js`,
+    `/app/node_modules/${server.name}/dist/index.js`,
+    `${process.cwd()}/node_modules/${server.name}/dist/bundle.js`,
+    `${process.cwd()}/node_modules/${server.name}/dist/index.js`,
+    `${process.cwd()}/node_modules/${server.name}/mcp-server.js`,
+  ];
+  for (const p of paths) {
+    const found = existsSync(p);
+    console.log(`[resolve] ${key}: ${p} -> ${found}`);
+    if (found) return p;
+  }
+  console.log(`[resolve] ${key}: NOT FOUND in any path`);
   return null;
 }
 
