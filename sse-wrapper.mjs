@@ -2,48 +2,98 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
 
-const GCLOUD_BUNDLE = new URL('./packages/gcloud-mcp/dist/bundle.js', import.meta.url).pathname;
 const PORT = process.env.PORT || 3100;
+const MCP_SERVER = process.env.MCP_SERVER || 'gcloud';
+
+// Available MCP servers
+const SERVERS = {
+  gcloud: {
+    name: '@google-cloud/gcloud-mcp',
+    desc: 'GCP via gcloud CLI (needs gcloud auth)',
+  },
+  storage: {
+    name: '@google-cloud/storage-mcp',
+    desc: 'GCS bucket/object management',
+  },
+  observability: {
+    name: '@google-cloud/observability-mcp',
+    desc: 'Logs, metrics, traces',
+  },
+  cloudrun: {
+    name: '@google-cloud/cloud-run-mcp',
+    desc: 'Cloud Run deployment',
+  },
+};
+
+function resolveServer(key) {
+  const server = SERVERS[key];
+  if (!server) return null;
+  const pkgDir = `/app/node_modules/${server.name}`;
+  const binPath = `${pkgDir}/dist/index.js`;
+  if (existsSync(binPath)) return binPath;
+  // Try package.json bin
+  try {
+    const pkg = JSON.parse(require('fs').readFileSync(`${pkgDir}/package.json`, 'utf8'));
+    const bin = typeof pkg.bin === 'string' ? pkg.bin : Object.values(pkg.bin || {})[0];
+    if (bin) return `${pkgDir}/${bin}`;
+  } catch {}
+  return null;
+}
 
 const app = createMcpExpressApp();
 const sessions = {};
 
+// Health / info endpoint
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    server: MCP_SERVER,
+    sse: '/mcp',
+    messages: '/messages?sessionId=<id>',
+    available: Object.keys(SERVERS),
+  });
+});
+
 // SSE endpoint
 app.get('/mcp', async (req, res) => {
   const sessionId = randomUUID();
-  console.log(`[${sessionId}] SSE connected`);
+  console.log(`[${sessionId}] SSE connected (server=${MCP_SERVER})`);
+
+  const serverPath = resolveServer(MCP_SERVER);
+  if (!serverPath) {
+    res.status(500).send(`Server '${MCP_SERVER}' not found`);
+    return;
+  }
 
   const transport = new SSEServerTransport('/messages', res);
   sessions[sessionId] = { transport, child: null };
 
-  // Spawn gcloud MCP as child process
-  const child = spawn('node', [GCLOUD_BUNDLE], {
+  const child = spawn('node', [serverPath], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, PATH: `${process.env.HOME}/Desktop/google-cloud-sdk/bin:${process.env.PATH}` },
+    env: {
+      ...process.env,
+      PATH: `/opt/google-cloud-sdk/bin:${process.env.PATH}`,
+    },
   });
 
   sessions[sessionId].child = child;
 
-  // Bridge: child stdout → SSE client
   child.stdout.on('data', (data) => {
-    const lines = data.toString().split('\n').filter(l => l.trim());
-    for (const line of lines) {
+    for (const line of data.toString().split('\n').filter(l => l.trim())) {
       try {
-        const msg = JSON.parse(line);
-        transport.send(msg);
-      } catch (e) {
-        // not JSON, skip
-      }
+        transport.send(JSON.parse(line));
+      } catch {}
     }
   });
 
   child.stderr.on('data', (data) => {
-    console.error(`[${sessionId}] stderr: ${data.toString().trim()}`);
+    console.error(`[${sessionId}] ${data.toString().trim()}`);
   });
 
   child.on('close', (code) => {
-    console.log(`[${sessionId}] child exited with code ${code}`);
+    console.log(`[${sessionId}] exited ${code}`);
     delete sessions[sessionId];
   });
 
@@ -53,7 +103,6 @@ app.get('/mcp', async (req, res) => {
     delete sessions[sessionId];
   };
 
-  // Send initial endpoint event
   res.write(`event: endpoint\ndata: /messages?sessionId=${sessionId}\n\n`);
 });
 
@@ -61,27 +110,22 @@ app.get('/mcp', async (req, res) => {
 app.post('/messages', async (req, res) => {
   const sessionId = req.query.sessionId;
   const session = sessions[sessionId];
-
   if (!session) {
     res.status(404).send('Session not found');
     return;
   }
-
-  // Bridge: HTTP POST → child stdin
-  const msg = JSON.stringify(req.body) + '\n';
-  session.child.stdin.write(msg);
+  session.child.stdin.write(JSON.stringify(req.body) + '\n');
   res.status(200).json({ ok: true });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 gcloud MCP SSE wrapper on http://localhost:${PORT}`);
-  console.log(`   SSE:     http://localhost:${PORT}/mcp`);
-  console.log(`   Messages: http://localhost:${PORT}/messages?sessionId=<id>`);
+  console.log(`🚀 GCP MCP SSE wrapper on http://0.0.0.0:${PORT}`);
+  console.log(`   Server: ${MCP_SERVER}`);
+  console.log(`   SSE:    http://localhost:${PORT}/mcp`);
+  console.log(`   Set MCP_SERVER env to switch: ${Object.keys(SERVERS).join(', ')}`);
 });
 
 process.on('SIGINT', () => {
-  for (const sid in sessions) {
-    sessions[sid]?.child?.kill();
-  }
+  for (const sid in sessions) sessions[sid]?.child?.kill();
   process.exit(0);
 });
