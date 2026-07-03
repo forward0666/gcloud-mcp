@@ -1,3 +1,20 @@
+# Stage 1: Build
+FROM node:20-slim AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json turbo.json ./
+COPY packages/gcloud-mcp/package.json packages/gcloud-mcp/
+COPY packages/observability-mcp/package.json packages/observability-mcp/
+COPY packages/storage-mcp/package.json packages/storage-mcp/
+COPY packages/backupdr-mcp/package.json packages/backupdr-mcp/
+
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# Stage 2: Runtime
 FROM node:20-slim
 
 # Install gcloud CLI
@@ -10,21 +27,11 @@ ENV PATH="/opt/google-cloud-sdk/bin:${PATH}"
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json turbo.json ./
+COPY package.json package-lock.json ./
 COPY packages/gcloud-mcp/package.json packages/gcloud-mcp/
-COPY packages/observability-mcp/package.json packages/observability-mcp/
-COPY packages/storage-mcp/package.json packages/storage-mcp/
-COPY packages/backupdr-mcp/package.json packages/backupdr-mcp/
-
-# Install dependencies
 RUN npm ci --omit=dev
 
-# Copy source and build
-COPY . .
-RUN npm run build
-
-# Copy SSE wrapper
+COPY --from=builder /app/packages/gcloud-mcp/dist packages/gcloud-mcp/dist
 COPY sse-wrapper.mjs .
 
 EXPOSE 3100
