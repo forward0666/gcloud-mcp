@@ -13,9 +13,9 @@ WORKDIR /app
 # Copy package files
 COPY package.json package-lock.json turbo.json ./
 COPY packages/gcloud-mcp/package.json packages/gcloud-mcp/
-COPY packages/observability-mcp/package.json packages/observability-mcp/ 2>/dev/null || true
-COPY packages/storage-mcp/package.json packages/storage-mcp/ 2>/dev/null || true
-COPY packages/backupdr-mcp/package.json packages/backupdr-mcp/ 2>/dev/null || true
+COPY packages/observability-mcp/package.json packages/observability-mcp/
+COPY packages/storage-mcp/package.json packages/storage-mcp/
+COPY packages/backupdr-mcp/package.json packages/backupdr-mcp/
 
 # Install dependencies
 RUN npm ci --omit=dev
